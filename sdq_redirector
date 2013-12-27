@@ -1,0 +1,99 @@
+#!/usr/bin/perl
+
+#
+# Redirect requestst to insite if users's quota is exceeded,
+# Otherwize pass requests unchanged.
+# Modified By Umang Jain, B11086, IIT Mandi
+# Place this line into squid conf:
+# redirect_program /path/to/sdq_redirector
+#
+######## Configuration
+my $db_dir = "/var/db/squidquota/users"; # Defines the location of the per-user files
+my $redirecturl = 'http://10.4.1.100'; # URL to redirect
+my $ext_redirector =
+     '/usr/local/libexec/rejik3/redirector /etc/squid/rejik3/redirector.conf';
+my $skip_regexp = 'http://10\.d+\.d+\.d+\d+';
+######## Implementation
+
+$|=1;  # $OUTPUT_AUTOFLUSH=1
+
+my $ext_is_open=1;
+my $line;
+while (($line=<STDIN>)) {
+
+  @X = split /\s/, $line;  # URL ip-address/fqdn ident method
+  my $url = $X[0];
+  my $user = $X[2];
+  my $quota_exceeded=0;
+#open (JNL,">>~/Desktop/backup.txt");
+#		print JNL "Hello $url\n";
+#		close JNL;
+
+  # Prevent redirect loop
+  if( $url eq $redirecturl ) {
+    print $line;
+    next;
+  }elsif( ($url =~ /10\.4\.[0-9]\.*/) || (index($url, 'insite.iitmandi') != -1)) {
+    print $line;
+    next;
+  }
+	
+
+  # Step 1: Check quota
+  if( -f "$db_dir/$user/quotadb" ){
+    if( open (USERDB,"<$db_dir/$user/quotadb") ){
+      my @userdb = <USERDB>;
+      close USERDB;
+      my $db_balance=0;
+      foreach my $dbline (@userdb) {
+        @db_field = split(/\s/,$dbline);
+        if ($db_field[0] eq "balance") {
+          $db_balance = $db_field[1];
+        }
+        if ($db_field[0] eq "quota") {
+          $db_quota = $db_field[1];
+        }
+      }
+
+      if ($db_quota eq "unlimited") {
+        $quota_exceeded=0;
+      }elsif ($db_quota eq "zero") {
+        $quota_exceeded=1;
+      }elsif ($db_quota>0) {
+        if ($db_balance > 0) {
+          $quota_exceeded=0;
+        }else{
+          $quota_exceeded=1;
+        }
+      }
+
+    }else{
+      system( "logger -t sdq_redirector -p daemon.err \"Can't open $db_dir/$user/quotadb: $!.\"");
+    }
+  }else{
+    system( "logger -t sdq_redirector -p daemon.err \"$db_dir/$user/quotadb is not found.\"");
+  }
+
+  if( $quota_exceeded){
+    print "302:$redirecturl\n"; # redirect to
+  } else { # pass to  external redirector program (rejik)
+    # Step 2: call external redirector
+
+  if( open (EXT, "|$ext_redirector") ) {
+    $ext_is_open=1;
+  }else{
+    system( "logger -t sdq_redirector -p daemon.err \"Can't run "
+         ."($?) external redirector '$ext_redirector'\", pass URLs unchanged");
+    $ext_is_open=0;
+  }
+
+   if( $ext_is_open ){
+      print EXT $line;
+    }else{
+      print "$line";
+    }
+   close EXT;
+  }
+}
+
+close EXT;
